@@ -1,0 +1,15 @@
+MODEL EVALUATION REPORT
+=======================
+Images Evaluated: 7146
+Top-1 Correct Matches: 1763
+Top-5 Correct Matches: 2867
+Thresholded Correct Matches: 2799
+Direct Matches: 2546
+Mapped Matches: 181
+Incorrect Matches: 4347
+Top-1 Match Rate: 24.67%
+Top-5 Match Rate: 40.12%
+Thresholded Match Rate: 39.17%
+Precision: 0.220
+Recall: 0.742
+F1 Score: 0.340
