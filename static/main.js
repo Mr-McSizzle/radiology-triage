@@ -1,6 +1,11 @@
 // main.js — NeuroScan Edge Frontend (Production Build)
 // Handles: Command Center, Queue, Dossier, Landing
 
+// ─── Configuration ────────────────────────────────────────────────────
+// Put your Render backend URL here (e.g. "https://my-backend.onrender.com")
+// If blank, it will use the same domain as the frontend (works for local testing)
+const API_BASE_URL = "https://radiology-triage.onrender.com";
+
 // ─── Helpers ──────────────────────────────────────────────────────────
 function timeAgo(iso) {
     if (!iso) return '--';
@@ -57,7 +62,7 @@ async function uploadXRay(file) {
     const startTime = performance.now();
 
     try {
-        const res = await fetch('/api/analyze', { method: 'POST', body: formData });
+        const res = await fetch(`${API_BASE_URL}/api/analyze`, { method: 'POST', body: formData });
         if (!res.ok) {
             const err = await res.json().catch(() => ({}));
             throw new Error(err.detail || res.statusText);
@@ -170,7 +175,7 @@ async function loadQueue() {
     if (!list) return;
 
     try {
-        const res = await fetch('/api/queue');
+        const res = await fetch(`${API_BASE_URL}/api/queue`);
         if (!res.ok) throw new Error('Failed to load queue');
         const data = await res.json();
 
@@ -241,7 +246,7 @@ async function loadDossier() {
 
     if (scanId) {
         try {
-            const res = await fetch(`/api/scan/${scanId}`);
+            const res = await fetch(`${API_BASE_URL}/api/scan/${scanId}`);
             if (res.ok) data = await res.json();
         } catch (_) {}
     }
