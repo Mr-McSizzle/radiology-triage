@@ -1,40 +1,18 @@
 """
 model_utils.py - NeuroScan Edge Inference Pipeline (v5 - Production Grade)
 
-ARCHITECTURE:
-Dual-model selective ensemble using DenseNet-121 (224px) and ResNet-50 (512px).
-Each pathology uses only models with clean noise baselines for that specific head.
+Supports two modes controlled by the NEUROSCAN_LITE environment variable:
+  - LITE MODE (NEUROSCAN_LITE=1 or RENDER=true): Single DenseNet-121 only.
+    Fits within 512MB RAM for free-tier hosting (Render, Railway, etc.).
+  - FULL MODE (default, local): Dual-model selective ensemble with
+    DenseNet-121 (224px) + ResNet-50 (512px) and Test-Time Augmentation.
 
 KEY DESIGN DECISIONS:
-- NO CLAHE: CLAHE amplifies noise textures that both models misinterpret as
-  pathology (e.g., Effusion goes from 0.00 to 1.00 on noise with CLAHE).
-  The models were trained on raw normalized images without CLAHE.
-- TTA: Horizontal flip only (averaging 2 passes per model). This reduces
-  random noise variance without adding CLAHE artifacts.
-- Selective ensemble: Each pathology uses only model(s) with noise ceiling < 0.40.
-
-NOISE BASELINES (op_norm output on 50 noise images WITHOUT CLAHE, mean+3*std):
-
-                             DenseNet-121    ResNet-50       Strategy
-Atelectasis                     0.5828         0.0657    -> ResNet only
-Consolidation                   0.0567         0.0024    -> Both (ensemble)
-Infiltration                    0.0003         0.0016    -> Both (ensemble)
-Pneumothorax                    0.3683         0.0000    -> Both (ensemble)
-Edema                           0.3417         0.0000    -> Both (ensemble)
-Emphysema                       0.3189         0.0000    -> Both (ensemble)
-Fibrosis                        0.0000         0.0000    -> Both (ensemble)
-Effusion                        0.5213         0.0000    -> ResNet only
-Pneumonia                       0.0003         1.0000    -> DenseNet only
-Pleural_Thickening              0.0001         0.0002    -> Both (ensemble)
-Cardiomegaly                    0.0752         0.0199    -> Both (ensemble)
-Nodule                          0.0191         0.0196    -> Both (ensemble)
-Mass                            0.0001         0.1224    -> Both (ensemble)
-Hernia                          0.0115         0.0000    -> Both (ensemble)
-Lung Lesion                     0.0003         0.5000    -> DenseNet only
-Fracture                        0.3134         0.8776    -> DenseNet only
-Lung Opacity                    0.9276         0.9999    -> BOTH BIASED
-Enlarged Cardiomediastinum      0.0000         0.5000    -> DenseNet only
+- NO CLAHE: CLAHE amplifies noise textures that models misinterpret as
+  pathology. Models receive raw normalized images only.
+- Per-pathology noise boundary calibration eliminates false positives.
 """
+import os
 import torch
 import torchxrayvision as xrv
 import numpy as np
@@ -45,6 +23,21 @@ import logging
 logger = logging.getLogger("neuroscan.model")
 
 # ══════════════════════════════════════════════════════════════════════
+# Mode Detection
+# ══════════════════════════════════════════════════════════════════════
+
+# Auto-detect Render (sets RENDER=true) or allow manual override
+LITE_MODE = (
+    os.environ.get("NEUROSCAN_LITE", "").strip() == "1"
+    or os.environ.get("RENDER", "").strip().lower() == "true"
+)
+
+if LITE_MODE:
+    logger.info("Running in LITE mode (single DenseNet-121, low memory)")
+else:
+    logger.info("Running in FULL mode (dual-model ensemble)")
+
+# ══════════════════════════════════════════════════════════════════════
 # Model Setup
 # ══════════════════════════════════════════════════════════════════════
 
@@ -52,9 +45,11 @@ logger.info("Loading DenseNet-121 (224px)...")
 densenet = xrv.models.DenseNet(weights="densenet121-res224-all")
 densenet.eval()
 
-logger.info("Loading ResNet-50 (512px)...")
-resnet = xrv.models.ResNet(weights="resnet50-res512-all")
-resnet.eval()
+resnet = None
+if not LITE_MODE:
+    logger.info("Loading ResNet-50 (512px)...")
+    resnet = xrv.models.ResNet(weights="resnet50-res512-all")
+    resnet.eval()
 
 PATHOLOGIES = list(densenet.pathologies)
 
@@ -89,29 +84,36 @@ SAFETY_MARGIN = 0.03
 _PATHOLOGY_CONFIG = {}
 for name in PATHOLOGIES:
     dn_noise = _DENSENET_NOISE.get(name, 1.0)
-    rn_noise = _RESNET_NOISE.get(name, 1.0)
-    dn_clean = dn_noise < _CLEAN_THRESHOLD
-    rn_clean = rn_noise < _CLEAN_THRESHOLD
 
-    if dn_clean and rn_clean:
-        strategy = "ensemble"
-        boundary = max(0.50, max(dn_noise, rn_noise) + SAFETY_MARGIN)
-    elif dn_clean:
-        strategy = "densenet"
+    if LITE_MODE:
+        # DenseNet-only: use DenseNet noise ceiling for boundary
         boundary = max(0.50, dn_noise + SAFETY_MARGIN)
-    elif rn_clean:
-        strategy = "resnet"
-        boundary = max(0.50, rn_noise + SAFETY_MARGIN)
+        _PATHOLOGY_CONFIG[name] = {
+            "strategy": "densenet",
+            "boundary": boundary,
+        }
     else:
-        strategy = "high_threshold"
-        boundary = min(0.98, max(0.50, min(dn_noise, rn_noise) + SAFETY_MARGIN + 0.05))
+        rn_noise = _RESNET_NOISE.get(name, 1.0)
+        dn_clean = dn_noise < _CLEAN_THRESHOLD
+        rn_clean = rn_noise < _CLEAN_THRESHOLD
 
-    _PATHOLOGY_CONFIG[name] = {
-        "strategy": strategy,
-        "boundary": boundary,
-        "dn_clean": dn_clean,
-        "rn_clean": rn_clean,
-    }
+        if dn_clean and rn_clean:
+            strategy = "ensemble"
+            boundary = max(0.50, max(dn_noise, rn_noise) + SAFETY_MARGIN)
+        elif dn_clean:
+            strategy = "densenet"
+            boundary = max(0.50, dn_noise + SAFETY_MARGIN)
+        elif rn_clean:
+            strategy = "resnet"
+            boundary = max(0.50, rn_noise + SAFETY_MARGIN)
+        else:
+            strategy = "high_threshold"
+            boundary = min(0.98, max(0.50, min(dn_noise, rn_noise) + SAFETY_MARGIN + 0.05))
+
+        _PATHOLOGY_CONFIG[name] = {
+            "strategy": strategy,
+            "boundary": boundary,
+        }
 
 DECISION_BOUNDARIES = {name: cfg["boundary"] for name, cfg in _PATHOLOGY_CONFIG.items()}
 
@@ -157,11 +159,40 @@ def _run_single_model(model_obj, prep_fn, img_gray_arr):
         return model_obj(tensor)[0].numpy()
 
 
-def _run_inference_with_tta(img_gray_arr):
-    """
-    Dual-model ensemble with Test-Time Augmentation (horizontal flip).
-    NO CLAHE — models receive raw normalized images as they were trained on.
-    """
+def _run_inference_lite(img_gray_arr):
+    """Single-model inference (DenseNet only). No TTA to save memory."""
+    dn_preds = _run_single_model(densenet, _prepare_for_densenet, img_gray_arr)
+
+    results = []
+    for i, name in enumerate(PATHOLOGIES):
+        cfg = _PATHOLOGY_CONFIG[name]
+        boundary = cfg["boundary"]
+        score = float(dn_preds[i])
+        margin = score - boundary
+
+        if margin > 0:
+            headroom = 1.0 - boundary
+            cal_conf = margin / headroom if headroom > 0 else 0.0
+        else:
+            cal_conf = 0.0
+
+        results.append({
+            "name": name,
+            "score": score,
+            "boundary": boundary,
+            "margin": margin,
+            "strategy": "densenet",
+            "calibrated_conf": min(1.0, max(0.0, cal_conf)),
+            "is_positive": margin > 0,
+            "is_weak": -WEAK_MARGIN <= margin <= 0,
+        })
+
+    results.sort(key=lambda x: x["margin"], reverse=True)
+    return results
+
+
+def _run_inference_full(img_gray_arr):
+    """Dual-model ensemble with Test-Time Augmentation (horizontal flip)."""
     img_flipped = _flip_horizontal(img_gray_arr)
 
     # DenseNet: original + flipped, averaged
@@ -174,10 +205,9 @@ def _run_inference_with_tta(img_gray_arr):
     rn_flip = _run_single_model(resnet, _prepare_for_resnet, img_flipped)
     rn_avg = (rn_orig + rn_flip) / 2.0
 
-    # Selective ensemble per pathology
     results = []
     for i, name in enumerate(PATHOLOGIES):
-        cfg = _PATHOLOGY_CONFIG.get(name, {"strategy": "densenet", "boundary": 0.50})
+        cfg = _PATHOLOGY_CONFIG[name]
         strategy = cfg["strategy"]
         boundary = cfg["boundary"]
 
@@ -216,6 +246,13 @@ def _run_inference_with_tta(img_gray_arr):
     return results
 
 
+def _run_inference(img_gray_arr):
+    """Route to the correct inference engine based on mode."""
+    if LITE_MODE:
+        return _run_inference_lite(img_gray_arr)
+    return _run_inference_full(img_gray_arr)
+
+
 # ══════════════════════════════════════════════════════════════════════
 # Clinical Correlation Rules
 # ══════════════════════════════════════════════════════════════════════
@@ -230,7 +267,7 @@ _CO_OCCURRING = [
 ]
 
 _INCOMPATIBLE = [
-    ({"Emphysema", "Effusion"},),  # air trapping vs fluid
+    ({"Emphysema", "Effusion"},),
 ]
 
 
@@ -241,14 +278,12 @@ def _apply_correlation_rules(results):
     for r in results:
         name = r["name"]
 
-        # Boost co-occurring findings
         for pair_set, boost_factor in _CO_OCCURRING:
             if name in pair_set:
                 partner = list(pair_set - {name})[0]
                 if partner in positive_names:
                     r["calibrated_conf"] = min(1.0, r["calibrated_conf"] * boost_factor)
 
-        # Suppress incompatible findings
         for (pair_set,) in _INCOMPATIBLE:
             if name in pair_set and r["is_positive"]:
                 partner = list(pair_set - {name})[0]
@@ -314,7 +349,6 @@ def _validate_image(uploaded_file):
             "Invalid image: The image brightness is outside the expected range."
         )
 
-    # Entropy check — near-max entropy = random noise
     histogram = np.histogram(img_arr, bins=256, range=(0, 256))[0]
     histogram = histogram / histogram.sum()
     nonzero = histogram[histogram > 0]
@@ -338,10 +372,10 @@ def _validate_image(uploaded_file):
 # ══════════════════════════════════════════════════════════════════════
 
 def predict_xray(uploaded_file, top_k=5):
-    """Full production pipeline: validate -> TTA -> ensemble -> correlate -> results."""
+    """Full production pipeline: validate -> inference -> correlate -> results."""
 
     img_gray_arr = _validate_image(uploaded_file)
-    all_results = _run_inference_with_tta(img_gray_arr)
+    all_results = _run_inference(img_gray_arr)
     all_results = _apply_correlation_rules(all_results)
     strong, weak, no_significant = _select_findings(all_results)
 
@@ -379,8 +413,9 @@ def predict_xray(uploaded_file, top_k=5):
 def _warmup():
     dummy = np.random.RandomState(0).randint(50, 200, (64, 64), dtype=np.uint8)
     _run_single_model(densenet, _prepare_for_densenet, dummy)
-    _run_single_model(resnet, _prepare_for_resnet, dummy)
-    logger.info("Model warm-up complete.")
+    if resnet is not None:
+        _run_single_model(resnet, _prepare_for_resnet, dummy)
+    logger.info("Model warm-up complete (%s mode).", "LITE" if LITE_MODE else "FULL")
 
 _warmup()
 
