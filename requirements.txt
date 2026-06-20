@@ -2,3 +2,10 @@ fastapi
 uvicorn
 python-multipart
 pydantic
+torch
+torchvision
+torchxrayvision
+Pillow
+numpy
+opencv-python-headless
+grad-cam
