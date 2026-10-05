@@ -1,108 +1,69 @@
-# NeuroScan Edge 🧠🩺
+# NeuroScan Edge
 
-**NeuroScan Edge** is a production-grade, highly calibrated AI platform for analyzing chest X-rays. Built to assist radiologists and clinicians, the platform leverages a sophisticated dual-model ensemble to detect 18 distinct thoracic pathologies, calculate patient risk scores, and automatically triage cases in a clinical queue.
+**Experimental AI decision-support pipeline for chest X-ray analysis, explainability, and triage workflows.**
 
-![NeuroScan Edge Interface](https://img.shields.io/badge/Status-Production%20Grade%20(v5)-success)
-![Python](https://img.shields.io/badge/Python-3.9%2B-blue)
-![FastAPI](https://img.shields.io/badge/FastAPI-0.103%2B-00a393)
-![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-ee4c2c)
+NeuroScan Edge combines convolutional image models, test-time augmentation, Grad-CAM visualization, rule-based clinical reasoning, input validation, and a FastAPI application layer.
 
-## ✨ Key Features
+> Research prototype only. This repository is not a medical device and is not validated for clinical diagnosis or patient-care decisions.
 
-### 🔬 Dual-Model Selective Ensemble
-NeuroScan Edge runs both **DenseNet-121** (224px) and **ResNet-50** (512px) simultaneously. Through rigorous empirical testing against Gaussian noise baselines, the system maps the inherent biases of each architecture. It dynamically routes inference on a per-pathology basis to the most mathematically stable model, completely eliminating false positive hallucinations.
+## System components
 
-### 🪞 Test-Time Augmentation (TTA)
-To mathematically smooth noise variance and stabilize confidence scoring, every uploaded X-ray undergoes Test-Time Augmentation. The image is processed twice per model (original + horizontally flipped), and the probability distributions are averaged.
+- **Image inference** using DenseNet-121 and ResNet-50 based pipelines.
+- **Test-time augmentation** to compare / stabilize predictions across transformed inputs.
+- **Grad-CAM** generation for visual inspection of model-attended regions.
+- **Clinical reasoning rules** for combining findings and prioritization logic.
+- **Input validation** for obviously invalid or unsuitable image uploads.
+- **FastAPI application layer** with queue / command-center style workflows.
+- **Evaluation scripts and saved result artifacts** for inspecting model behavior.
 
-### 🏥 Clinical Reasoning Engine
-The engine doesn't just output raw AI probabilities; it understands medical context:
-- **Co-morbid Boost:** Findings that frequently co-occur (e.g., *Pneumonia* + *Consolidation*) mutually reinforce each other.
-- **Incompatible Suppression:** Findings that are clinically impossible to present together (e.g., *Emphysema* vs *Effusion*) are automatically cross-checked, suppressing the weaker signal.
-- **Critical Escalation:** Detecting acute findings (like *Pneumothorax* or *Fracture*) automatically escalates the patient's queue urgency to **HIGH**, regardless of the overall aggregated score.
+## Architecture
 
-### 🗺️ High-Resolution Target Heatmaps
-Powered by GradCAM, the system generates 448px high-resolution, anatomically-aware heatmaps. The engine dynamically targets the pathology that achieved the highest margin above its specific decision boundary, ensuring the heatmap perfectly highlights the AI's primary finding.
+```text
+X-ray input
+    ↓
+input validation
+    ↓
+model inference / TTA
+    ↓
+finding scores
+    ├── Grad-CAM explanation
+    └── reasoning / prioritization rules
+             ↓
+       API + triage UI
+```
 
-### 🛡️ Bulletproof Input Validation
-The API features strict heuristics to instantly reject invalid uploads before they consume GPU/CPU cycles:
-- Rejects color photographs (via RGB channel variance checking).
-- Rejects pure noise (via Information entropy calculations).
-- Rejects blank/uniform images (via Contrast variance).
-- Rejects extreme aspect ratios (panorama/strip formats).
+## Evaluation transparency
 
----
+The repository includes `evaluation_report.txt` and `evaluation_results.csv`. The checked-in evaluation report currently records:
 
-## 🚀 Getting Started
+| Metric | Result |
+|---|---:|
+| Images evaluated | 7,146 |
+| Top-1 match rate | 24.67% |
+| Top-5 match rate | 40.12% |
+| Thresholded match rate | 39.17% |
+| Precision | 0.220 |
+| Recall | 0.742 |
+| F1 | 0.340 |
 
-### Prerequisites
-- Python 3.9 or higher
-- Git
+These results are included deliberately: the project is an engineering and research prototype, **not evidence of clinical-grade performance**.
 
-### Installation
+## Running the API
 
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/Mr-McSizzle/radiology-triage.git
-   cd radiology-triage
-   ```
-
-2. **Create a virtual environment (Recommended):**
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows use: venv\Scripts\activate
-   ```
-
-3. **Install the dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-### Running the Server
-
-Start the NeuroScan Edge backend using Uvicorn. The models will undergo a brief "warm-up" phase on startup to eliminate cold-start latency.
+Create an environment, install the dependencies listed by the repository, then launch the FastAPI application with Uvicorn. The project README previously used:
 
 ```bash
 uvicorn api:app --host 0.0.0.0 --port 8000
 ```
 
----
+## Research limitations
 
-## 💻 How to Use the Platform
+- No claim of clinical safety, efficacy, or regulatory validation.
+- Evaluation metrics are well below what would be required for autonomous diagnostic use.
+- Rule-based reasoning cannot substitute for prospective clinical validation.
+- Model calibration, dataset shift, subgroup performance, and external-site generalization require dedicated study.
+- Grad-CAM is an interpretability aid, not proof of causal reasoning.
 
-NeuroScan Edge comes with a suite of built-in web dashboards for clinical use. Once the server is running, you can access the platform via your web browser:
+## Why keep this project public
 
-### 1. The Command Center
-Navigate to: `http://localhost:8000/command_center`
-
-This is the primary ingestion point. 
-1. Click the upload area or drag-and-drop a **grayscale chest X-ray** (PNG or JPEG).
-2. The system will process the image, applying the dual-model ensemble and clinical reasoning.
-3. Review the results: You will see the patient's aggregated **Risk Score**, the computed **Urgency Level**, the top pathological findings with confidence bars, and a dynamic **GradCAM Heatmap** overlaying the exact region of interest.
-
-### 2. Mission Control Queue
-Navigate to: `http://localhost:8000/queue`
-
-This acts as a live triage dashboard for the radiology department.
-- View real-time counters for **Critical**, **Priority**, and **Routine** scans.
-- Scans are automatically sorted based on the severity of their findings and their calculated risk score.
-- Click on any patient card in the queue to open their full clinical dossier.
-
-### 3. Clinical Dossier
-*(Accessed via the Queue or directly at `/dossier?scan_id=...`)*
-
-Provides a deep-dive, side-by-side view of a historical scan. It displays the original X-ray alongside the AI-generated heatmap, a breakdown of the severity weights, and the human-readable clinical reasoning text generated by the engine.
-
----
-
-## 🛠️ Architecture Overview
-
-- `api.py`: The core FastAPI application serving the REST API and HTML frontends.
-- `model_utils.py`: Contains the v5 inference pipeline, including TTA, the DenseNet/ResNet selective ensemble logic, and the pre-computed noise boundary ceilings.
-- `heatmap_utils.py`: Handles the high-resolution GradCAM overlay generation.
-- `clinical_reasoning.py`: The rule-based engine that maps AI confidence to severity weights and interactions.
-- `queue_utils.py`: Manages triage levels (HIGH, MEDIUM, LOW) based on the risk score output.
-- `static/`: Contains the frontend HTML, CSS, and unified `main.js` application logic.
-
-## 📄 License
-This project is for educational and research purposes. Do not use for actual medical diagnosis without FDA/CE regulatory approval and physician oversight.
+The interesting part of NeuroScan Edge is not a claim that AI has solved radiology. It is the **systems problem**: model orchestration, uncertainty-aware workflow design, explainability, validation, and human-facing triage infrastructure around imperfect models.
