@@ -18,19 +18,22 @@ NeuroScan Edge combines convolutional image models, test-time augmentation, Grad
 
 ## Architecture
 
-```text
-X-ray input
-    ↓
-input validation
-    ↓
-model inference / TTA
-    ↓
-finding scores
-    ├── Grad-CAM explanation
-    └── reasoning / prioritization rules
-             ↓
-       API + triage UI
+```mermaid
+flowchart TD
+    A[X-ray input] --> B[Input validation]
+    B --> C[Model inference + TTA]
+    C --> D[Finding scores]
+    D --> E[Grad-CAM]
+    D --> F[Reasoning + prioritization rules]
+    E --> G[API + triage UI]
+    F --> G
 ```
+
+## Visual example
+
+The repository includes a generated Grad-CAM output for inspecting where the model is attending:
+
+![Grad-CAM output](gradcam_output.png)
 
 ## Evaluation transparency
 
@@ -50,7 +53,7 @@ These results are included deliberately: the project is an engineering and resea
 
 ## Running the API
 
-Create an environment, install the dependencies listed by the repository, then launch the FastAPI application with Uvicorn. The project README previously used:
+Create an environment, install the dependencies listed by the repository, then launch the FastAPI application with Uvicorn:
 
 ```bash
 uvicorn api:app --host 0.0.0.0 --port 8000
